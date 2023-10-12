@@ -81,7 +81,6 @@ def preset_parser (preset, **additional_kwargs):
     
     
     allkwargs = {**preset_kwargs, **additional_kwargs}
-    print (allkwargs)
     return allkwargs
 
     
