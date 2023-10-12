@@ -1,0 +1,152 @@
+#!/usr/bin/env python
+"""Upmix mono files to stereo files."""
+
+import argparse
+import concurrent.futures
+import dataclasses
+import math
+import os
+import subprocess
+
+import soundfile as sf
+
+fade_duration = 5
+slice_duration = (3 * 60) + fade_duration
+
+
+def split(filename, output_path, start, stop):
+    return subprocess.Popen(
+        ["sox", filename, output_path, "trim", str(start), f"={stop}"]
+    )
+
+
+def split_to_slice(filename, slice_list):
+    process_list = []
+    for s in slice_list:
+        process_list.append(split(filename, s.name, s.start, s.stop))
+    [p.wait() for p in process_list]
+
+
+def concatenate_slice_list(filename, slice_list):
+    """Concatenate slices into one new sound file"""
+    cmd = ["sox", "-m"]
+    for s in slice_list:
+        cmd.append(f'"|sox {s.name} -p pad {s.start}"')
+    cmd.append(filename)
+    cmd = " ".join(cmd)
+    subprocess.run(cmd, shell=True)
+
+
+def upmix_slice_list(slice_list, upmixed_slice_list):
+    future_list = []
+    # Limit concurrent calls of 'upmix-slice' to 3 to avoid crashing
+    # processes due to limited resource (full memory). Tested with
+    # 16GB RAM. Generally to avoid crashing processes it's also important
+    # to keep a low 'slice_duration', otherwise the memory also runs full.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        for s, us in zip(slice_list, upmixed_slice_list):
+            future_list.append(
+                executor.submit(
+                    subprocess.run,
+                    [
+                        "./upmix-slice",
+                        s.name,
+                        us.name,
+                        "--duration",
+                        str(slice_duration),
+                    ],
+                )
+            )
+
+        # Wait until all upmixes are finished.
+        for f in future_list:
+            p = f.result()  # subprocess.CompletedProcess
+            # Check if any upmix had problems.
+            if p.returncode != 0:
+                print(
+                    "There was an error in upmixing a slice.",
+                    f"return code is: {p.returncode}\n",
+                    f"stdout : {p.stdout}\n",
+                    f"stderr: {p.stderr}\n",
+                )
+
+
+def add_fades_to_slice_list(upmixed_slice_list, faded_slice_list):
+    # We need to add fade-in/fade-out to the slices, to avoid
+    # clicks.
+    for s in upmixed_slice_list:
+        n = f"{s.name}_faded.wav"
+        subprocess.run(
+            ["sox", s.name, n, "fade", f"{fade_duration}", "-0", f"{fade_duration}"]
+        )
+        faded_slice_list.append(Slice(s.start, s.stop, n))
+
+
+@dataclasses.dataclass(frozen=True)
+class Slice(object):
+    start: float
+    stop: float
+    name: str
+
+    def close(self):
+        try:
+            os.remove(self.name)
+        except FileNotFoundError:
+            pass
+
+
+def upmix(input_path, output_path, cleanup=True):
+    info = sf.info(input_path)
+    f_duration = info.duration
+    slice_count = int(math.ceil(f_duration / slice_duration))
+
+    slice_list = []
+    upmixed_slice_list = []
+    faded_slice_list = []
+    for slice_index in range(slice_count):
+        start = (slice_duration - fade_duration) * slice_index
+        stop = start + slice_duration + fade_duration
+
+        slice_before = f".slice_mono_{slice_index}.wav"
+        slice_list.append(Slice(start, stop, slice_before))
+
+        slice_after = f".slice_upmixed_{slice_index}.wav"
+        upmixed_slice_list.append(Slice(start, stop, slice_after))
+
+    try:
+        split_to_slice(input_path, slice_list)
+        upmix_slice_list(slice_list, upmixed_slice_list)
+        add_fades_to_slice_list(upmixed_slice_list, faded_slice_list)
+        concatenate_slice_list(output_path, faded_slice_list)
+    finally:
+        if cleanup:
+            for ls in (slice_list, upmixed_slice_list, faded_slice_list):
+                [s.close() for s in ls]
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        prog="upmix",
+        description=(
+            "upmix sound file from mono to stereo. "
+            "Sound files need to be encoded"
+            " as stereo, even if they are technically mono."
+        ),
+    )
+
+    parser.add_argument("input")
+    parser.add_argument("output")
+    parser.add_argument(
+        "-n",
+        "--nocleanup",
+        action="store_true",
+        help="If set temporary slice files aren't removed",
+    )
+
+    args = parser.parse_args()
+
+    input_path = args.input
+    output_path = args.output
+
+    print(f"Upmix {input_path} to {output_path}.")
+    upmix(input_path, output_path, cleanup=not args.nocleanup)

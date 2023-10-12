@@ -29,6 +29,8 @@ in
     nativeCheckInputs = [];
     checkInputs = [];
     propagatedBuildInputs = [ 
+      # Dependencies of s3a_decorrelation_toolbox,
+      # see setup.py
       numpy
       scipy
       soundfile
@@ -36,6 +38,9 @@ in
       acoustics
       pyloudnorm
       matplotlib
+
+      # Dependencies of upmix bin
+      sox
     ];
     doCheck = false;
   }

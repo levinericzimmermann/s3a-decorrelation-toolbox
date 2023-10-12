@@ -1,0 +1,72 @@
+#!/usr/bin/env python
+"""This file wraps the s3a_decorrelator library as a simple script.
+
+With this you can upmix mono files to stereo files.
+Because 's3a_decorrelator' crash if the converted files are
+too long, this script is only intended to convert short parts
+of files (< 10 minutes), so called 'slices', and therefore the
+program is called 'upmix-slice'.
+"""
+
+import argparse
+
+import numpy as np
+import s3a_decorrelation_toolbox.s3a_decorrelator as s3a
+
+parser = argparse.ArgumentParser(
+    prog="upmix-slice",
+    description=(
+        "upmix short sound file from mono to stereo. "
+        "Sound files need to be encoded"
+        " as stereo, even if they are technically mono."
+    ),
+)
+
+parser.add_argument("input")
+parser.add_argument("output")
+parser.add_argument("-d", "--duration", type=float)
+parser.add_argument("-t", "--type", type=int)
+
+args = parser.parse_args()
+
+input_path = args.input
+output_path = args.output
+
+duration = 60
+if args.duration:
+    duration = float(args.duration)
+
+preset_type = 1
+if args.type:
+    preset_type = int(args.type)
+
+print(f"\tUpmix-slice {input_path} to {output_path} with a duration of {duration} seconds")
+
+preset_tuple = (
+    "diffuse",
+    "upmix",
+    # They both have 'num_out_chans=6', but I only need stereo :)
+    #   "upmix_mono_LRCSLsRs",
+    #   "upmix_stereo_LRCSLsRs",
+    "upmix_lauridsen4",
+)
+
+preset = preset_tuple[preset_type]
+
+try:
+    s3a.s3a_decorrelator(
+        input_path,
+        output_path,
+        preset=preset,
+        make_mono=True,
+        # duration=duration,
+        num_out_chans=2,
+        fs=44100,
+    )
+except np.AxisError:
+    print(
+        "Did you use a mono file?",
+        "This is not supported.",
+        "Use a stereo encoding, even though it's actually only mono",
+    )
+    raise
